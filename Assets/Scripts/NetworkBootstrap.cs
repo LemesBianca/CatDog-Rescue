@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
@@ -20,9 +23,12 @@ public sealed class NetworkBootstrap : MonoBehaviour
     public static int StaleMoveCommands { get; private set; }
 
     private NetworkManager networkManager;
+    private UnityTransport transport;
     private GameObject playerPrefab;
     private PushableBox spawnedBox;
     private string status = "Aguardando inicio da rede.";
+    private string clientAddress = "127.0.0.1";
+    private string localIPv4Address;
     private bool isShuttingDown;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -56,9 +62,10 @@ public sealed class NetworkBootstrap : MonoBehaviour
         CreateTestArea();
         EnsureSceneControllers();
         networkManager = gameObject.AddComponent<NetworkManager>();
-        UnityTransport transport = gameObject.AddComponent<UnityTransport>();
+        transport = gameObject.AddComponent<UnityTransport>();
 
         transport.SetConnectionData("127.0.0.1", Port, "0.0.0.0");
+        localIPv4Address = FindLocalIPv4Address();
         networkManager.NetworkConfig = new NetworkConfig();
         networkManager.NetworkConfig.NetworkTransport = transport;
         playerPrefab = Resources.Load<GameObject>("NetworkPlayer");
@@ -91,12 +98,14 @@ public sealed class NetworkBootstrap : MonoBehaviour
 
     private void OnGUI()
     {
-        GUILayout.BeginArea(new Rect(20, 20, 280, 400), GUI.skin.box);
+        GUILayout.BeginArea(new Rect(20, 20, 340, 440), GUI.skin.box);
         GUILayout.Label("CatDog Rescue - Teste de Rede");
         GUILayout.Space(8);
 
         if (!networkManager.IsListening)
         {
+            GUILayout.Label("IPv4 do Host:");
+            clientAddress = GUILayout.TextField(clientAddress);
             if (GUILayout.Button("Iniciar Host"))
             {
                 StartHost();
@@ -109,6 +118,11 @@ public sealed class NetworkBootstrap : MonoBehaviour
         }
         else
         {
+            if (networkManager.IsServer)
+            {
+                GUILayout.Label($"IP para o Client: {localIPv4Address}");
+            }
+
             GUILayout.Label($"Conectados: {networkManager.ConnectedClientsIds.Count}");
             if (GUILayout.Button("Encerrar rede"))
             {
@@ -169,14 +183,46 @@ public sealed class NetworkBootstrap : MonoBehaviour
             return;
         }
 
+        string address = clientAddress.Trim();
+        if (!IPAddress.TryParse(address, out IPAddress parsedAddress) ||
+            parsedAddress.AddressFamily != AddressFamily.InterNetwork)
+        {
+            status = "Informe um endereco IPv4 valido para o Host.";
+            return;
+        }
+
         ResetSessionState();
+        transport.SetConnectionData(address, Port, "0.0.0.0");
         if (networkManager.StartClient())
         {
-            status = "Tentando conectar ao Host local.";
+            status = $"Tentando conectar a {address}:{Port}.";
             return;
         }
 
         status = "Nao foi possivel iniciar o Client.";
+    }
+
+    private static string FindLocalIPv4Address()
+    {
+        foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (networkInterface.OperationalStatus != OperationalStatus.Up ||
+                networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+            {
+                continue;
+            }
+
+            foreach (UnicastIPAddressInformation unicastAddress in networkInterface.GetIPProperties().UnicastAddresses)
+            {
+                IPAddress address = unicastAddress.Address;
+                if (address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
+                {
+                    return address.ToString();
+                }
+            }
+        }
+
+        return "IPv4 nao encontrado";
     }
 
     private void HandleClientConnected(ulong clientId)
